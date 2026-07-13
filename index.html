@@ -184,11 +184,14 @@
 <script>
 // ---- CONFIG ----
 // Path to the CSV, relative to this HTML file.
-const DATA_CSV_PATH = 'figure_sorting/data.csv';
+const DATA_CSV_PATH = 'data.csv';
 // Folder containing the images, relative to this HTML file.
-const IMAGES_DIR = 'figure_sorting/images';
-// Extensions to try, in order, for each image key. Add more if needed.
-const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'PNG', 'JPG', 'JPEG'];
+const IMAGES_DIR = 'images';
+// Filenames are built as: <key><MAIN_SUFFIX>.<EXTENSION> and <key><NORM_SUFFIX>.<EXTENSION>
+// e.g. VCC47_SFR_rat_voronoi_galex.png and VCC47_SFR_rat_norm_voronoi_galex.png
+const MAIN_SUFFIX = '_SFR_rat_voronoi_galex';
+const NORM_SUFFIX = '_SFR_rat_norm_voronoi_galex';
+const EXTENSION = 'png';
 // ----------------
 
 let rows = [];
@@ -235,21 +238,15 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
 });
 
-// Try loading IMAGES_DIR/basePath.ext for each ext in order.
-// Resolves with the working URL, or null if none worked.
-function resolveImageUrl(basePath) {
+// Tries loading IMAGES_DIR/basePath<suffix>.EXTENSION.
+// Resolves with the working URL, or null if it doesn't exist.
+function resolveImageUrl(basePath, suffix) {
   return new Promise((resolve) => {
-    let i = 0;
     const img = new Image();
-    function tryNext() {
-      if (i >= IMAGE_EXTENSIONS.length) { resolve(null); return; }
-      const url = `${IMAGES_DIR}/${encodeURIComponent(basePath)}.${IMAGE_EXTENSIONS[i]}`;
-      i++;
-      img.src = url;
-    }
-    img.onload = () => resolve(img.src);
-    img.onerror = tryNext;
-    tryNext();
+    const url = `${IMAGES_DIR}/${encodeURIComponent(basePath + suffix)}.${EXTENSION}`;
+    img.onload = () => resolve(url);
+    img.onerror = () => resolve(null);
+    img.src = url;
   });
 }
 
@@ -261,8 +258,8 @@ async function resolveAllImages() {
 
   await Promise.all(uniqueKeys.map(async (key) => {
     const [main, norm] = await Promise.all([
-      resolveImageUrl(key),
-      resolveImageUrl(`${key}_norm`)
+      resolveImageUrl(key, MAIN_SUFFIX),
+      resolveImageUrl(key, NORM_SUFFIX)
     ]);
     resolvedImages[key] = { main, norm };
   }));
