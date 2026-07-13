@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Galaxy significance map sorter</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 1100px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    color: #1a1a1a;
+    background: #fff;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-end;
+    margin: 1.25rem 0;
+    padding: 1rem;
+    background: #f7f7f5;
+    border-radius: 10px;
+  }
+  .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  label {
+    font-size: 13px;
+    color: #555;
+  }
+  select {
+    padding: 6px 8px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 13px;
+    background: #fff;
+    min-width: 140px;
+  }
+  #status-msg {
+    font-size: 13px;
+    color: #888;
+    margin: 0 0 1rem;
+  }
+  #grid {
+    display: grid;
+    gap: 14px;
+  }
+  .card {
+    background: #fff;
+    border: 1px solid #e5e5e3;
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .img-wrap {
+    width: 100%;
+    aspect-ratio: 1;
+    background: #f7f7f5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    cursor: zoom-in;
+  }
+  .img-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  .label {
+    padding: 8px 10px;
+    font-size: 12px;
+    color: #555;
+    border-top: 1px solid #eee;
+  }
+  .label .name {
+    font-weight: 600;
+    color: #1a1a1a;
+    font-size: 13px;
+    margin-bottom: 2px;
+  }
+  code {
+    font-family: "SF Mono", Menlo, monospace;
+    background: #f0f0ee;
+    padding: 1px 4px;
+    border-radius: 4px;
+  }
+  #modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+  #modal-overlay.open {
+    display: flex;
+  }
+  #modal-content {
+    display: flex;
+    gap: 16px;
+    max-width: 95vw;
+    max-height: 90vh;
+  }
+  #modal-content img {
+    max-width: 45vw;
+    max-height: 90vh;
+    object-fit: contain;
+    border-radius: 6px;
+    background: #fff;
+  }
+  #modal-close {
+    position: absolute;
+    top: 20px;
+    right: 30px;
+    color: #fff;
+    font-size: 32px;
+    cursor: pointer;
+    line-height: 1;
+    user-select: none;
+  }
+  #modal-title {
+    position: absolute;
+    top: 22px;
+    left: 30px;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+
+<h1>Galaxy significance map sorter</h1>
+<p style="font-size:14px;color:#666;">Sort the galaxy catalogue by any numeric column. Each galaxy shows its main image alongside its <code>_norm</code> version.</p>
+
+<div class="controls">
+  <div class="control-group">
+    <label>Sort by</label>
+    <select id="sort-col" disabled>
+      <option>Loading data...</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label>Order</label>
+    <select id="sort-dir">
+      <option value="desc">High to low</option>
+      <option value="asc">Low to high</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label>Columns</label>
+    <select id="ncols">
+      <option value="3">3</option>
+      <option value="4" selected>4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+    </select>
+  </div>
+</div>
+
+<p id="status-msg">Loading catalogue...</p>
+
+<div id="grid"></div>
+
+<div id="modal-overlay">
+  <span id="modal-title"></span>
+  <span id="modal-close">&times;</span>
+  <div id="modal-content"></div>
+</div>
+
+<script>
+// ---- CONFIG ----
+// Path to the CSV, relative to this HTML file.
+const DATA_CSV_PATH = 'data.csv';
+// Folder containing the images, relative to this HTML file.
+const IMAGES_DIR = 'images';
+// Extensions to try, in order, for each image key. Add more if needed.
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'PNG', 'JPG', 'JPEG'];
+// ----------------
+
+let rows = [];
+let numericCols = [];
+let fileKeyCol = null;
+let resolvedImages = {}; // key -> { main: url|null, norm: url|null }
+
+const sortCol = document.getElementById('sort-col');
+const sortDir = document.getElementById('sort-dir');
+const ncolsSel = document.getElementById('ncols');
+const grid = document.getElementById('grid');
+const statusMsg = document.getElementById('status-msg');
+const modalOverlay = document.getElementById('modal-overlay');
+const modalContent = document.getElementById('modal-content');
+const modalTitle = document.getElementById('modal-title');
+const modalClose = document.getElementById('modal-close');
+
+function openModal(name, mainUrl, normUrl) {
+  modalContent.innerHTML = '';
+  modalTitle.textContent = name;
+  if (mainUrl) {
+    const im1 = document.createElement('img');
+    im1.src = mainUrl;
+    modalContent.appendChild(im1);
+  }
+  if (normUrl) {
+    const im2 = document.createElement('img');
+    im2.src = normUrl;
+    modalContent.appendChild(im2);
+  }
+  modalOverlay.classList.add('open');
+}
+
+function closeModal() {
+  modalOverlay.classList.remove('open');
+  modalContent.innerHTML = '';
+}
+
+modalClose.addEventListener('click', closeModal);
+modalOverlay.addEventListener('click', (e) => {
+  if (e.target === modalOverlay) closeModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeModal();
+});
+
+// Try loading IMAGES_DIR/basePath.ext for each ext in order.
+// Resolves with the working URL, or null if none worked.
+function resolveImageUrl(basePath) {
+  return new Promise((resolve) => {
+    let i = 0;
+    const img = new Image();
+    function tryNext() {
+      if (i >= IMAGE_EXTENSIONS.length) { resolve(null); return; }
+      const url = `${IMAGES_DIR}/${encodeURIComponent(basePath)}.${IMAGE_EXTENSIONS[i]}`;
+      i++;
+      img.src = url;
+    }
+    img.onload = () => resolve(img.src);
+    img.onerror = tryNext;
+    tryNext();
+  });
+}
+
+async function resolveAllImages() {
+  const keyCol = fileKeyCol || 'name';
+  const uniqueKeys = Array.from(new Set(
+    rows.map(r => r[keyCol]).filter(k => k !== null && k !== undefined).map(String)
+  ));
+
+  await Promise.all(uniqueKeys.map(async (key) => {
+    const [main, norm] = await Promise.all([
+      resolveImageUrl(key),
+      resolveImageUrl(`${key}_norm`)
+    ]);
+    resolvedImages[key] = { main, norm };
+  }));
+}
+
+function setupColumns(cols) {
+  fileKeyCol = cols.find(c => /^(file|filename|name|image|id)$/i.test(c.trim())) || cols[0];
+
+  numericCols = cols.filter(c => {
+    if (c === fileKeyCol) return false;
+    return rows.some(r => typeof r[c] === 'number' && !isNaN(r[c]));
+  });
+
+  sortCol.innerHTML = '';
+  numericCols.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    sortCol.appendChild(opt);
+  });
+  sortCol.disabled = numericCols.length === 0;
+}
+
+sortCol.addEventListener('change', render);
+sortDir.addEventListener('change', render);
+ncolsSel.addEventListener('change', render);
+
+function render() {
+  grid.innerHTML = '';
+  const ncols = ncolsSel.value;
+  grid.style.gridTemplateColumns = `repeat(${ncols}, minmax(0, 1fr))`;
+
+  if (rows.length === 0) {
+    statusMsg.textContent = "No catalogue data loaded.";
+    return;
+  }
+
+  let displayRows = rows.slice();
+  const col = sortCol.value;
+  const dir = sortDir.value;
+  if (col) {
+    displayRows.sort((a, b) => {
+      const va = a[col], vb = b[col];
+      const aValid = typeof va === 'number' && !isNaN(va);
+      const bValid = typeof vb === 'number' && !isNaN(vb);
+      if (!aValid && !bValid) return 0;
+      if (!aValid) return 1;
+      if (!bValid) return -1;
+      return dir === 'asc' ? va - vb : vb - va;
+    });
+  }
+
+  let matched = 0;
+  const keyCol = fileKeyCol || 'name';
+  displayRows.forEach(row => {
+    const key = row[keyCol];
+    const keyStr = (key !== null && key !== undefined) ? String(key) : null;
+    const imgs = keyStr ? (resolvedImages[keyStr] || { main: null, norm: null }) : { main: null, norm: null };
+    if (imgs.main || imgs.norm) matched++;
+
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const pairWrap = document.createElement('div');
+    pairWrap.style.cssText = 'display:flex;width:100%;';
+    if (imgs.main || imgs.norm) {
+      pairWrap.addEventListener('click', () => {
+        openModal(keyStr || '', imgs.main, imgs.norm);
+      });
+    }
+
+    [imgs.main, imgs.norm].forEach((url) => {
+      const half = document.createElement('div');
+      half.className = 'img-wrap';
+      half.style.cssText = 'flex:1 1 50%;aspect-ratio:1;';
+      if (url) {
+        const imEl = document.createElement('img');
+        imEl.src = url;
+        half.appendChild(imEl);
+      }
+      pairWrap.appendChild(half);
+    });
+    card.appendChild(pairWrap);
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    const nameSpan = document.createElement('div');
+    nameSpan.className = 'name';
+    nameSpan.textContent = keyStr || '\u2014';
+    label.appendChild(nameSpan);
+
+    if (col && row[col] !== undefined && row[col] !== null && row[col] !== '') {
+      const valSpan = document.createElement('div');
+      const v = typeof row[col] === 'number' ? Math.round(row[col] * 1000) / 1000 : row[col];
+      valSpan.textContent = `${col}: ${v}`;
+      label.appendChild(valSpan);
+    }
+    card.appendChild(label);
+    grid.appendChild(card);
+  });
+
+  statusMsg.textContent = `${displayRows.length} rows, ${matched} matched to an image.`;
+}
+
+async function init() {
+  try {
+    const res = await fetch(DATA_CSV_PATH);
+    if (!res.ok) throw new Error(`Could not fetch ${DATA_CSV_PATH} (${res.status})`);
+    const csvText = await res.text();
+
+    const parsed = Papa.parse(csvText, {
+      header: true,
+      dynamicTyping: true,
+      skipEmptyLines: true
+    });
+
+    rows = parsed.data;
+    const cols = parsed.meta.fields || [];
+    setupColumns(cols);
+
+    statusMsg.textContent = 'Loading images...';
+    await resolveAllImages();
+
+    render();
+  } catch (err) {
+    statusMsg.textContent = `Error loading data: ${err.message}. Make sure data.csv and the images/ folder are next to this HTML file, and that you're viewing this via a web server (e.g. GitHub Pages) rather than double-clicking the file.`;
+    console.error(err);
+  }
+}
+
+init();
+</script>
+
+</body>
+</html>
