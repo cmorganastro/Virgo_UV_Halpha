@@ -139,6 +139,20 @@
     font-size: 15px;
     font-weight: 600;
   }
+  .dataset-btn {
+    padding: 10px 24px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    color: #1a1a1a;
+  }
+  .dataset-btn:hover {
+    background: #f0f0ee;
+    border-color: #ccc;
+  }
 </style>
 </head>
 <body>
@@ -146,34 +160,53 @@
 <h1>Galaxy significance map sorter</h1>
 <p style="font-size:14px;color:#666;">Sort the galaxy catalogue by any numeric column. Each galaxy shows its main image alongside its <code>_norm</code> version.</p>
 
-<div class="controls">
+<div id="dataset-picker" class="controls">
   <div class="control-group">
-    <label>Sort by</label>
-    <select id="sort-col" disabled>
-      <option>Loading data...</option>
-    </select>
-  </div>
-  <div class="control-group">
-    <label>Order</label>
-    <select id="sort-dir">
-      <option value="desc">High to low</option>
-      <option value="asc">Low to high</option>
-    </select>
-  </div>
-  <div class="control-group">
-    <label>Columns</label>
-    <select id="ncols">
-      <option value="3">3</option>
-      <option value="4" selected>4</option>
-      <option value="5">5</option>
-      <option value="6">6</option>
-    </select>
+    <label>Choose a dataset to view</label>
+    <div style="display:flex; gap:10px;">
+      <button id="pick-galex" class="dataset-btn">GALEX</button>
+      <button id="pick-uvit" class="dataset-btn">UVIT</button>
+    </div>
   </div>
 </div>
 
-<p id="status-msg">Loading catalogue...</p>
+<div id="main-ui" style="display:none;">
+  <div class="controls">
+    <div class="control-group">
+      <label>Dataset</label>
+      <select id="dataset-select">
+        <option value="galex">GALEX</option>
+        <option value="uvit">UVIT</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Sort by</label>
+      <select id="sort-col" disabled>
+        <option>Loading data...</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Order</label>
+      <select id="sort-dir">
+        <option value="desc">High to low</option>
+        <option value="asc">Low to high</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Columns</label>
+      <select id="ncols">
+        <option value="3">3</option>
+        <option value="4" selected>4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+      </select>
+    </div>
+  </div>
 
-<div id="grid"></div>
+  <p id="status-msg">Loading catalogue...</p>
+
+  <div id="grid"></div>
+</div>
 
 <div id="modal-overlay">
   <span id="modal-title"></span>
@@ -183,16 +216,28 @@
 
 <script>
 // ---- CONFIG ----
-// Path to the CSV, relative to this HTML file.
-const DATA_CSV_PATH = 'data.csv';
-// Folder containing the images, relative to this HTML file.
-const IMAGES_DIR = 'images';
-// Filenames are built as: <key><MAIN_SUFFIX>.<EXTENSION> and <key><NORM_SUFFIX>.<EXTENSION>
-// e.g. VCC47_SFR_rat_voronoi_galex.png and VCC47_SFR_rat_norm_voronoi_galex.png
-const MAIN_SUFFIX = '_SFR_rat_voronoi_galex';
-const NORM_SUFFIX = '_SFR_rat_norm_voronoi_galex';
-const EXTENSION = 'png';
+// One entry per dataset. Add more here if you ever add a third instrument.
+const DATASETS = {
+  galex: {
+    label: 'GALEX',
+    csvPath: 'figure_sorting/data_galex.csv',
+    imagesDir: 'figure_sorting/images_galex',
+    mainSuffix: '_SFR_rat_voronoi_galex',
+    normSuffix: '_SFR_rat_norm_voronoi_galex',
+    extension: 'png'
+  },
+  uvit: {
+    label: 'figure_sorting/uvit',
+    csvPath: 'figure_sorting/data_uvit.csv',
+    imagesDir: 'images_uvit',
+    mainSuffix: '_SFR_rat_voronoi_uvit',
+    normSuffix: '_SFR_rat_norm_voronoi_uvit',
+    extension: 'png'
+  }
+};
 // ----------------
+
+let currentDataset = null;
 
 let rows = [];
 let numericCols = [];
@@ -208,6 +253,11 @@ const modalOverlay = document.getElementById('modal-overlay');
 const modalContent = document.getElementById('modal-content');
 const modalTitle = document.getElementById('modal-title');
 const modalClose = document.getElementById('modal-close');
+const datasetPicker = document.getElementById('dataset-picker');
+const mainUi = document.getElementById('main-ui');
+const datasetSelect = document.getElementById('dataset-select');
+const pickGalexBtn = document.getElementById('pick-galex');
+const pickUvitBtn = document.getElementById('pick-uvit');
 
 function openModal(name, mainUrl, normUrl) {
   modalContent.innerHTML = '';
@@ -238,12 +288,13 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
 });
 
-// Tries loading IMAGES_DIR/basePath<suffix>.EXTENSION.
+// Tries loading <imagesDir>/basePath<suffix>.<extension> for the active dataset.
 // Resolves with the working URL, or null if it doesn't exist.
 function resolveImageUrl(basePath, suffix) {
+  const ds = DATASETS[currentDataset];
   return new Promise((resolve) => {
     const img = new Image();
-    const url = `${IMAGES_DIR}/${encodeURIComponent(basePath + suffix)}.${EXTENSION}`;
+    const url = `${ds.imagesDir}/${encodeURIComponent(basePath + suffix)}.${ds.extension}`;
     img.onload = () => resolve(url);
     img.onerror = () => resolve(null);
     img.src = url;
@@ -251,6 +302,7 @@ function resolveImageUrl(basePath, suffix) {
 }
 
 async function resolveAllImages() {
+  const ds = DATASETS[currentDataset];
   const keyCol = fileKeyCol || 'name';
   const uniqueKeys = Array.from(new Set(
     rows.map(r => r[keyCol]).filter(k => k !== null && k !== undefined).map(String)
@@ -258,8 +310,8 @@ async function resolveAllImages() {
 
   await Promise.all(uniqueKeys.map(async (key) => {
     const [main, norm] = await Promise.all([
-      resolveImageUrl(key, MAIN_SUFFIX),
-      resolveImageUrl(key, NORM_SUFFIX)
+      resolveImageUrl(key, ds.mainSuffix),
+      resolveImageUrl(key, ds.normSuffix)
     ]);
     resolvedImages[key] = { main, norm };
   }));
@@ -364,10 +416,23 @@ function render() {
   statusMsg.textContent = `${displayRows.length} rows, ${matched} matched to an image.`;
 }
 
-async function init() {
+async function loadDataset(datasetKey) {
+  currentDataset = datasetKey;
+  const ds = DATASETS[datasetKey];
+
+  rows = [];
+  numericCols = [];
+  fileKeyCol = null;
+  resolvedImages = {};
+
+  sortCol.disabled = true;
+  sortCol.innerHTML = '<option>Loading data...</option>';
+  grid.innerHTML = '';
+  statusMsg.textContent = `Loading ${ds.label} catalogue...`;
+
   try {
-    const res = await fetch(DATA_CSV_PATH);
-    if (!res.ok) throw new Error(`Could not fetch ${DATA_CSV_PATH} (${res.status})`);
+    const res = await fetch(ds.csvPath);
+    if (!res.ok) throw new Error(`Could not fetch ${ds.csvPath} (${res.status})`);
     const csvText = await res.text();
 
     const parsed = Papa.parse(csvText, {
@@ -380,17 +445,26 @@ async function init() {
     const cols = parsed.meta.fields || [];
     setupColumns(cols);
 
-    statusMsg.textContent = 'Loading images...';
+    statusMsg.textContent = `Loading ${ds.label} images...`;
     await resolveAllImages();
 
     render();
   } catch (err) {
-    statusMsg.textContent = `Error loading data: ${err.message}. Make sure data.csv and the images/ folder are next to this HTML file, and that you're viewing this via a web server (e.g. GitHub Pages) rather than double-clicking the file.`;
+    statusMsg.textContent = `Error loading ${ds.label} data: ${err.message}. Make sure ${ds.csvPath} and the ${ds.imagesDir}/ folder are next to this HTML file, and that you're viewing this via a web server (e.g. GitHub Pages) rather than double-clicking the file.`;
     console.error(err);
   }
 }
 
-init();
+function showMainUi(datasetKey) {
+  datasetPicker.style.display = 'none';
+  mainUi.style.display = 'block';
+  datasetSelect.value = datasetKey;
+  loadDataset(datasetKey);
+}
+
+pickGalexBtn.addEventListener('click', () => showMainUi('galex'));
+pickUvitBtn.addEventListener('click', () => showMainUi('uvit'));
+datasetSelect.addEventListener('change', () => loadDataset(datasetSelect.value));
 </script>
 
 </body>
